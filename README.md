@@ -115,8 +115,6 @@ curl -H "Content-Type: application/json" \
 # Check job
 curl http://localhost:8000/jobs/<job_id>
 
-
-
 # Master playlist (API proxy → MinIO)
 curl http://localhost:8000/videos/<video_id>/playlist
 
