@@ -1,0 +1,40 @@
+# Node / Next.js
+node_modules/
+.next/
+out/
+*.log
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+.venv*/
+pip-wheel-metadata/
+
+# OS / editors
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Env & secrets
+.env
+*.env
+.env.local
+.env.*.local
+
+# Build / cache
+dist/
+build/
+coverage/
+.cache/
+
+# Media / generated HLS (we store these in MinIO, not git)
+*.mp4
+*.mov
+*.mkv
+*.ts
+*.m3u8
+
+# Docker
+*.pid
