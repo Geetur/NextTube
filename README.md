@@ -35,6 +35,7 @@
    ├── FFmpeg → HLS variants (240/480/720)
    ├── Upload HLS to MinIO (HLS/<id>/...)
    └── Update Postgres: jobs & renditions statuses
+```
 
 ## 📁 Repo layout
 ```
