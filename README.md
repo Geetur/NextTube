@@ -28,16 +28,13 @@
    └── GET /videos/<id>/playlist ► API (proxy) ───► MinIO : HLS/<id>/...
 
 2. Worker creates master playlist
-
-Worker (Python + FFmpeg)
-├── BRPOP jobs:transcode (Redis)
-├── Download source from MinIO
-├── FFmpeg → HLS variants (240/480/720)
-├── Upload HLS to MinIO (HLS/<id>/...)
-└── Update Postgres: jobs & renditions statuses
-
 ```text
-
+   Worker (Python + FFmpeg)
+   ├── BRPOP jobs:transcode (Redis)
+   ├── Download source from MinIO
+   ├── FFmpeg → HLS variants (240/480/720)
+   ├── Upload HLS to MinIO (HLS/<id>/...)
+   └── Update Postgres: jobs & renditions statuses
 
 ## 📁 Repo layout
 ```
