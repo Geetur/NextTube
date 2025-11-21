@@ -19,17 +19,23 @@
 
 ## 🧭 Architecture (high level)
 
-Browser (Next.js)
-├── POST /upload ─────────────► API (FastAPI) ──► MinIO : source/<id>.mp4
-├── POST /jobs/transcode ─────► API ────────────► Redis : jobs:transcode
-└── GET /videos/<id>/playlist ► API (proxy) ───► MinIO : HLS/<id>/...
-▲
-Worker (Python + FFmpeg) ◄────────┘
-├── BRPOP jobs:transcode (Redis)
-├── Download source from MinIO
-├── FFmpeg → HLS variants (240/480/720)
-├── Upload HLS to MinIO (HLS/<id>/...)
-└── Update Postgres: jobs & renditions statuses
+1. Browser looking for master playlist
+
+   ```text
+   Browser (Next.js)
+   ├── POST /upload ─────────────► API (FastAPI) ──► MinIO : source/<id>.mp4
+   ├── POST /jobs/transcode ─────► API ────────────► Redis : jobs:transcode
+   └── GET /videos/<id>/playlist ► API (proxy) ───► MinIO : HLS/<id>/...
+
+2. Worker creates master playlist
+```text
+   Worker (Python + FFmpeg)
+   ├── BRPOP jobs:transcode (Redis)
+   ├── Download source from MinIO
+   ├── FFmpeg → HLS variants (240/480/720)
+   ├── Upload HLS to MinIO (HLS/<id>/...)
+   └── Update Postgres: jobs & renditions statuses
+```
 
 ## 📁 Repo layout
 ```
