@@ -14,7 +14,7 @@ S3_ACCESS   = os.getenv("S3_ACCESS_KEY", "minioadmin")
 S3_SECRET   = os.getenv("S3_SECRET_KEY", "minioadmin")
 S3_BUCKET   = os.getenv("S3_BUCKET", "media")
 
-# Heights → (video_kbps, audio_kbps)
+# Heights (video rresolution) → (video_kbps, audio_kbps)
 PROFILE_PRESETS = {
     240: (400, 96),
     480: (800, 96),
@@ -94,14 +94,18 @@ def transcode_variants(src_path: str, out_dir: str, profiles: list[int]) -> dict
     return ok
 
 def process_job(job: dict):
+    #uuid
     job_id   = job["job_id"]
+    #video id
     video_id = job["video_id"]
     profiles = [int(h) for h in job.get("profiles", [240,480,720])]
     print(f"[worker] processing job={job_id} video={video_id} profiles={profiles}")
 
     # Fetch source key from DB
     with pg() as conn, conn.cursor() as cur:
+        #update state machine so that it is known that a job is being worked on
         cur.execute("UPDATE jobs SET status='running', updated_at=NOW() WHERE id=%s", (job_id,))
+        #fetching source key
         cur.execute("SELECT key FROM videos WHERE id=%s", (video_id,))
         row = cur.fetchone()
         if not row:
@@ -119,6 +123,8 @@ def process_job(job: dict):
 
     # Create/ensure rendition rows exist and mark 'running'
     with pg() as conn, conn.cursor() as cur:
+        # for each video quality, we create a row in renditions
+        # and set it to running
         for h in profiles:
             cur.execute(
                 "INSERT INTO renditions(id, video_id, height, status) VALUES (%s,%s,%s,%s) "
@@ -131,6 +137,7 @@ def process_job(job: dict):
             )
 
     try:
+        #ffmpeg per profile
         results = transcode_variants(src_path, out_dir, profiles)
 
         # Build master playlist
@@ -166,6 +173,7 @@ def main():
     r = redis.Redis.from_url(REDIS_URL)
     print("[worker] redis ping:", r.ping())
     while True:
+        #infinitely poppoing jobs
         item = r.brpop("jobs:transcode", timeout=5)
         if not item:
             continue
