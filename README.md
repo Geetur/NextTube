@@ -242,4 +242,4 @@ docker exec -it media_postgres psql -U postgres -d media -c "select video_id,hei
 - Optional: swap MinIO for AWS S3 (no code changes beyond env)
 
 ## 📜 License
-MIT (or your choice)
+MIT
