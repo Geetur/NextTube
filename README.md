@@ -237,8 +237,6 @@ docker exec -it media_postgres psql -U postgres -d media -c "select video_id,hei
 
 - Thumbnails & preview sprites
 
-- Configurable ladder + presets (quality vs speed)
-
 - Optional: swap MinIO for AWS S3 (no code changes beyond env)
 
 ## 📜 License
