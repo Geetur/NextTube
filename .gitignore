@@ -42,4 +42,5 @@ coverage/
 
 # Docker bind-mount placeholders; shared config lives at apps/config.py.
 apps/api/app/config.py
+apps/publisher/config.py
 apps/worker/config.py
