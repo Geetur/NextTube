@@ -36,6 +36,7 @@ coverage/
 *.mkv
 *.ts
 *.m3u8
+!apps/api/tests/data/*.mp4
 
 # Docker
 *.pid
