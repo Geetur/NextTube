@@ -76,18 +76,35 @@ export default function WatchPage({ params }: { params: { id: string } }) {
   }, [params.id]);
 
   return (
-    <main style={{ minHeight: '100vh', padding: '24px', fontFamily: 'ui-sans-serif, system-ui' }}>
-      <h1 style={{ fontSize: '1.25rem', fontWeight: 700 }}>Watch: {params.id}</h1>
-      <video
-        ref={videoRef}
-        controls
-        playsInline
-        style={{ width: '100%', maxWidth: 900, background: '#000', borderRadius: 12, marginTop: 12 }}
-      />
-      <div style={{ opacity: 0.8, marginTop: 8 }}>
-        <div>Status: {status}</div>
-        {startupMs !== null && <div>Startup: {Math.round(startupMs)} ms</div>}
-        <div>Rebuffers: {rebufferCount}</div>
+    <main className="page">
+      <nav className="nav">
+        <span className="brand">
+          <span className="brand-mark" aria-hidden>▶</span>
+          <span className="brand-word">NextTube</span>
+        </span>
+        <a className="back-link" href="/">← All videos</a>
+      </nav>
+
+      <div className={`badge badge-${status}`}>
+        <span className="badge-dot" />
+        {status}
+      </div>
+      <h1 className="watch-title">Now playing</h1>
+      <div className="watch-id">{params.id}</div>
+
+      <div className="player-frame">
+        <video ref={videoRef} controls playsInline />
+      </div>
+
+      <div className="stat-grid">
+        <div className="card stat-card">
+          <div className="stat-label">Startup</div>
+          <div className="stat-value">{startupMs !== null ? `${Math.round(startupMs)} ms` : '—'}</div>
+        </div>
+        <div className="card stat-card">
+          <div className="stat-label">Rebuffers</div>
+          <div className="stat-value">{rebufferCount}</div>
+        </div>
       </div>
     </main>
   );

@@ -1,13 +1,14 @@
 'use client';
 
-import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
+import { useEffect, useState } from 'react';
 
 type Video = { id: string; key: string; created_at: string };
 
 export default function Home() {
   const [file, setFile] = useState<File | null>(null);
   const [busy, setBusy] = useState(false);
+  const [dragActive, setDragActive] = useState(false);
   const [videos, setVideos] = useState<Video[]>([]);
   const router = useRouter();
 
@@ -16,7 +17,7 @@ export default function Home() {
     fetch('http://localhost:8000/videos')
       .then(r => r.json())
       .then(setVideos)
-      .catch(() => {});
+      .catch(() => { });
   }, []);
 
   async function onUpload(e: React.FormEvent) {
@@ -50,37 +51,78 @@ export default function Home() {
     }
   }
 
-  return (
-    <main style={{minHeight:'100vh', fontFamily:'ui-sans-serif, system-ui', padding:'24px'}}>
-      <h1 style={{fontSize:'1.5rem', fontWeight:700, marginBottom:12}}>Media Optimizer</h1>
+  function onDrop(e: React.DragEvent<HTMLDivElement>) {
+    e.preventDefault();
+    setDragActive(false);
+    const dropped = e.dataTransfer.files?.[0];
+    if (dropped) setFile(dropped);
+  }
 
-      <form onSubmit={onUpload} style={{display:'flex', gap:8, alignItems:'center', marginBottom:20}}>
-        <input type="file" accept="video/*" onChange={e => setFile(e.target.files?.[0] || null)} />
-        <button
-          disabled={!file || busy}
-          style={{padding:'10px 14px', borderRadius:8, border:'1px solid #222', background:'#222', color:'#fff'}}
+  return (
+    <main className="page">
+      <nav className="nav">
+        <span className="brand">
+          <span className="brand-mark" aria-hidden>▶</span>
+          <span className="brand-word">NextTube</span>
+        </span>
+      </nav>
+      <div className="chevron-rule" aria-hidden>
+        <span>›</span><span>›</span><span>›</span><span>›</span><span>›</span><span>›</span><span>›</span><span>›</span><span>›</span><span>›</span><span>›</span><span>›</span><span>›</span><span>›</span><span>›</span><span>›</span><span>›</span><span>›</span><span>›</span><span>›</span>
+      </div>
+
+      <section className="hero">
+        <h1>
+          Upload today.
+          <br />
+          Watch what&rsquo;s <em>next</em>.
+        </h1>
+        <p>Drop in a video, we transcode it to HLS, and it&rsquo;s ready to stream in seconds.</p>
+      </section>
+
+      <form onSubmit={onUpload}>
+        <div
+          className={`card upload-zone${dragActive ? ' drag-active' : ''}`}
+          onDragOver={e => { e.preventDefault(); setDragActive(true); }}
+          onDragLeave={() => setDragActive(false)}
+          onDrop={onDrop}
         >
-          {busy ? 'Uploading…' : 'Upload & Transcode'}
-        </button>
+          <div className="upload-row">
+            <label className="file-picker">
+              📼 Choose a video
+              <input type="file" accept="video/*" onChange={e => setFile(e.target.files?.[0] || null)} />
+            </label>
+            <span className="file-name">{file ? file.name : 'or drag one in here'}</span>
+          </div>
+          <div className="upload-row">
+            <button className="btn btn-primary" disabled={!file || busy}>
+              {busy ? <span className="spinner" /> : null}
+              {busy ? 'Uploading…' : 'Upload & Transcode'}
+              {!busy && <span className="btn-arrow">→</span>}
+            </button>
+            <span className="hint">MP4, MOV, MKV — we handle the rest.</span>
+          </div>
+        </div>
       </form>
 
-      <h2 style={{fontSize:'1.1rem', fontWeight:600, margin:'8px 0'}}>Recent uploads</h2>
-      <ul style={{display:'grid', gap:8, padding:0, listStyle:'none', maxWidth:800}}>
-        {videos.map(v => (
-          <li key={v.id} style={{display:'flex', justifyContent:'space-between', padding:'10px 12px', border:'1px solid #eee', borderRadius:10}}>
+      <h2 className="section-title">Recent uploads</h2>
+      <ul className="video-list">
+        {videos.map((v, i) => (
+          <li key={v.id} className="card video-card" style={{ animationDelay: `${i * 0.05}s` }}>
             <div>
-              <div style={{fontWeight:600}}>{v.id}</div>
-              <div style={{opacity:0.7, fontSize:12}}>{v.created_at}</div>
+              <div className="video-id">{v.id}</div>
+              <div className="video-meta">{v.created_at}</div>
             </div>
-            <button
-              onClick={() => router.push(`/watch/${v.id}`)}
-              style={{padding:'8px 12px', borderRadius:8, border:'1px solid #222', background:'#fff'}}
-            >
-              Watch
+            <button className="btn btn-ghost" onClick={() => router.push(`/watch/${v.id}`)}>
+              Watch <span className="btn-arrow">→</span>
             </button>
           </li>
         ))}
-        {videos.length === 0 && <li style={{opacity:0.7}}>No uploads yet.</li>}
+        {videos.length === 0 && (
+          <li className="card empty-state">
+            <span className="emoji">🎬</span>
+            Nothing here yet — upload your first video to get rolling.
+          </li>
+        )}
       </ul>
     </main>
   );
