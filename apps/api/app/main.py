@@ -1,23 +1,72 @@
-# apps/api/app/main.py
+"""Media Optimizer API."""
 
-import os, uuid, json, mimetypes
+import json
+import mimetypes
+import uuid
+from urllib.parse import urlencode
+
 import redis
-from fastapi import FastAPI, UploadFile, File, HTTPException
-from fastapi.responses import StreamingResponse, Response
+from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy import text
 
+from app.config import settings
 from app.db import engine
-from app.s3 import put_bytes
-from app.s3 import client as get_s3  # alias the s3 client
+from app.s3 import client as get_s3, put_bytes
 
-# ------------------------------------------------------------------
-# Globals
-# ------------------------------------------------------------------
-S3_BUCKET = os.getenv("S3_BUCKET", "media")
-REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379/0")
-r = redis.Redis.from_url(REDIS_URL)
+
+# ---------------------------------------------------------------------------
+# Request / response models
+# ---------------------------------------------------------------------------
+
+class UploadResponse(BaseModel):
+    video_id: str
+    key: str
+
+class TranscodeRequest(BaseModel):
+    video_id: str
+    profiles: list[int] | None = None
+
+class TranscodeJobPayload(BaseModel):
+    event_id: str
+    schema_version: int = 1
+    delivery_attempt: int = 0
+    job_id: str
+    video_id: str
+    profiles: list[int]
+
+class JobResponse(BaseModel):
+    job_id: str
+    status: str
+
+class JobDetail(BaseModel):
+    job_id: str
+    status: str
+    type: str
+    payload: dict
+    created_at: str
+    updated_at: str
+
+class RenditionOut(BaseModel):
+    height: int
+    status: str
+    key: str | None
+
+class VideoSummary(BaseModel):
+    id: str
+    source_key: str
+    created_at: str
+    renditions: list[RenditionOut]
+
+class VideoListItem(BaseModel):
+    id: str
+    key: str
+    created_at: str
+
+# Redis is kept available for caching; it is no longer the job queue.
+_redis = redis.Redis.from_url(settings.redis_url)
 
 app = FastAPI(title="Media Optimizer API")
 
@@ -29,147 +78,152 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ------------------------------------------------------------------
-# Health endpoint
-# ------------------------------------------------------------------
-# extendable with checks to other dependencies such as s3/minio, migrations, etc
+
+# ---------------------------------------------------------------------------
+# Health
+# ---------------------------------------------------------------------------
+
+
 @app.get("/healthz")
 def healthz():
-    # its important that we don't just return 200
-    # if the app starts, we want to see if the dependencies
-    # themselves are reachable
+    """Liveness probe that checks Postgres and Redis connectivity."""
     db_ok = True
-    # checking postgreswith a simple select
     try:
         with engine.connect() as conn:
             conn.execute(text("SELECT 1"))
     except Exception:
         db_ok = False
 
-    red_ok = True
-    # testing redis with a ping
+    redis_ok = True
     try:
-        r.ping()
+        _redis.ping()
     except Exception:
-        red_ok = False
-    # app at this point is either running with working dependencies
-    # or not
-    return {"ok": True, "db": db_ok, "redis": red_ok}
+        redis_ok = False
 
-# ------------------------------------------------------------------
-# Upload endpoint
-# ------------------------------------------------------------------
-# the basemodel is slightly unecessary but is good practive
-class UploadResp(BaseModel):
-    video_id: str
-    key: str
+    return {"ok": True, "db": db_ok, "redis": redis_ok}
 
-# were uploading a file to minio and updating postgres status
-@app.post("/upload", response_model=UploadResp)
-# getting the file via stream through fastapis UploadFile
+
+# ---------------------------------------------------------------------------
+# Upload
+# ---------------------------------------------------------------------------
+
+
+@app.post("/upload", response_model=UploadResponse)
 async def upload(file: UploadFile = File(...)):
+    """Upload a source video to MinIO and register it in the database."""
     fname = (file.filename or "").lower()
-    #default to mp4 if extension can't be determined by mp4
-    ext = "." + fname.split(".")[-1] if "." in fname else ".mp4"
-    # generating video id and s3 key
-
-    # we actually key by uuid to avoid collisions if two files have the same
-    # video id
+    ext = ("." + fname.split(".")[-1]) if "." in fname else ".mp4"
     vid = str(uuid.uuid4())
     key = f"source/{vid}{ext}"
 
     data = await file.read()
-    #ideally there is some max-size check and other sorts of content validation
     if not data:
         raise HTTPException(status_code=400, detail="empty file")
 
-    # Save to MinIO
     put_bytes(key, data, content_type=file.content_type or "application/octet-stream")
 
-    # Record in DB so downstream jobs can find the raw video object
     with engine.begin() as conn:
-        conn.execute(text("INSERT INTO videos(id, key) VALUES (:id,:key)"), {"id": vid, "key": key})
-
-    # returning the video id (uuid) and key (s3) as a pydantic model
-    return UploadResp(video_id=vid, key=key)
-
-# ------------------------------------------------------------------
-# Jobs endpoint
-# ------------------------------------------------------------------
-class JobCreate(BaseModel):
-    video_id: str
-    profiles: list[int] | None = None   # e.g. [240, 480, 720]
-
-class JobResp(BaseModel):
-    job_id: str
-    status: str
-
-# were creating jobs here. think of it as a job queue + state machine
-@app.post("/jobs/transcode", response_model=JobResp)
-def make_job(body: JobCreate):
-    with engine.begin() as conn:
-        # check that video exists in database
-        row = conn.execute(text("SELECT 1 FROM videos WHERE id=:id"), {"id": body.video_id}).first()
-        if not row:
-            raise HTTPException(status_code=404, detail="video not found")
-        # again were using uuid4 to create the unique job id here to avoid collisions
-        job_id = str(uuid.uuid4())
-        # we use the specified profile or default to 240, 480, 720 for simplicty sake
-        payload = {"profiles": body.profiles or [240, 480, 720]}
-        # insert into job with the key being the uuid, video being the video id, and the payload being
-        # the json(profiles). this allows for the job state to be tracked alongisde actually being worked on
         conn.execute(
-            text("INSERT INTO jobs(id, video_id, type, payload, status) "
-                 "VALUES (:id,:vid,'transcode',:payload,'queued')"),
-            {"id": job_id, "vid": body.video_id, "payload": json.dumps(payload)},
+            text("INSERT INTO videos(id, key) VALUES (:id, :key)"),
+            {"id": vid, "key": key},
         )
 
-    # Enqueue for worker. left push a json job into the redis list with the same form as the postgres
-    # insertion. redis is just the transportation for the worker here.
-    r.lpush("jobs:transcode", json.dumps({"job_id": job_id, "video_id": body.video_id, **payload}))
-
-    # return a pydantic model
-    return JobResp(job_id=job_id, status="queued")
+    return UploadResponse(video_id=vid, key=key)
 
 
+# ---------------------------------------------------------------------------
+# Jobs
+# ---------------------------------------------------------------------------
 
-@app.get("/jobs/{job_id}")
+
+@app.post("/jobs/transcode", response_model=JobResponse)
+def make_job(body: TranscodeRequest):
+    """Create a transcode job and persist an event for reliable publication."""
+    job_id = str(uuid.uuid4())
+    event_id = str(uuid.uuid4())
+    profiles = body.profiles or [240, 480, 720]
+    message = TranscodeJobPayload(
+        event_id=event_id,
+        job_id=job_id,
+        video_id=body.video_id,
+        profiles=profiles,
+    )
+
+    with engine.begin() as conn:
+        row = conn.execute(
+            text("SELECT 1 FROM videos WHERE id=:id"), {"id": body.video_id}
+        ).first()
+        if not row:
+            raise HTTPException(status_code=404, detail="video not found")
+
+        conn.execute(
+            text(
+                "INSERT INTO jobs(id, video_id, type, payload, status) "
+                "VALUES (:id, :vid, 'transcode', :payload, 'queued')"
+            ),
+            {"id": job_id, "vid": body.video_id, "payload": json.dumps({"profiles": profiles})},
+        )
+        conn.execute(
+            text(
+                "INSERT INTO outbox_events("
+                "id, job_id, topic, message_key, payload, state"
+                ") VALUES ("
+                ":id, :job_id, :topic, :message_key, :payload, 'pending'"
+                ")"
+            ),
+            {
+                "id": event_id,
+                "job_id": job_id,
+                "topic": settings.kafka_topic,
+                "message_key": job_id,
+                "payload": message.model_dump_json(),
+            },
+        )
+
+    return JobResponse(job_id=job_id, status="queued")
+
+
+@app.get("/jobs/{job_id}", response_model=JobDetail)
 def job_status(job_id: str):
     with engine.begin() as conn:
-        row = conn.execute(text(
-            "SELECT id, status, type, payload, created_at, updated_at "
-            "FROM jobs WHERE id=:id"
-        ), {"id": job_id}).first()
+        row = conn.execute(
+            text(
+                "SELECT id, status, type, payload, created_at, updated_at "
+                "FROM jobs WHERE id=:id"
+            ),
+            {"id": job_id},
+        ).first()
 
-        if not row:
-            raise HTTPException(status_code=404, detail="job not found")
+    if not row:
+        raise HTTPException(status_code=404, detail="job not found")
 
-        return {
-            "job_id": row[0],
-            "status": row[1],
-            "type": row[2],
-            "payload": row[3],
-            "created_at": str(row[4]),
-            "updated_at": str(row[5]),
-        }
+    return JobDetail(
+        job_id=row[0],
+        status=row[1],
+        type=row[2],
+        payload=row[3],
+        created_at=str(row[4]),
+        updated_at=str(row[5]),
+    )
 
-# ------------------------------------------------------------------
-# HLS proxy (API → MinIO) to avoid CORS
-# ------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# HLS proxy (API → MinIO) — avoids CORS issues in the browser
+# ---------------------------------------------------------------------------
+
+
 def _content_type_for(key: str) -> str:
     if key.endswith(".m3u8"):
         return "application/vnd.apple.mpegurl"
-    if key.endswith(".ts"):
-        return "video/MP2T"
+    if key.endswith(".m4s"):
+        return "video/iso.segment"
     guess, _ = mimetypes.guess_type(key)
     return guess or "application/octet-stream"
 
+
 @app.get("/videos/{video_id}/basic")
 def serve_basic_stream(video_id: str):
-    """
-    Serve the original uploaded file as a simple single-bitrate baseline
-    that <video> can play directly (e.g., MP4).
-    """
+    """Stream the original source video (MP4) directly from MinIO."""
     with engine.begin() as conn:
         row = conn.execute(
             text("SELECT key FROM videos WHERE id=:id"),
@@ -179,81 +233,115 @@ def serve_basic_stream(video_id: str):
     if not row:
         raise HTTPException(status_code=404, detail="video not found")
 
-    key = row[0]  # e.g. "source/<uuid>.mp4"
-    s3 = get_s3()
-    obj = s3.get_object(Bucket=S3_BUCKET, Key=key)
-
+    obj = get_s3().get_object(Bucket=settings.s3_bucket, Key=row[0])
     return StreamingResponse(
         obj["Body"],
-        media_type=_content_type_for(key),
+        media_type=_content_type_for(row[0]),
         headers={"Cache-Control": "public, max-age=60"},
     )
 
-# --- Videos: summary (renditions + status) ---
-@app.get("/videos/{video_id}/summary")
+
+@app.get("/videos/{video_id}/summary", response_model=VideoSummary)
 def video_summary(video_id: str):
     with engine.begin() as conn:
-        v = conn.execute(text(
-            "SELECT id, key, created_at FROM videos WHERE id=:id"
-        ), {"id": video_id}).first()
+        v = conn.execute(
+            text("SELECT id, key, created_at FROM videos WHERE id=:id"),
+            {"id": video_id},
+        ).first()
         if not v:
             raise HTTPException(status_code=404, detail="video not found")
-        rend = conn.execute(text(
-            "SELECT height, status, key FROM renditions WHERE video_id=:id ORDER BY height"
-        ), {"id": video_id}).fetchall()
-    return {
-        "id": v[0],
-        "source_key": v[1],
-        "created_at": str(v[2]),
-        "renditions": [{"height": r[0], "status": r[1], "key": r[2]} for r in rend],
-    }
+
+        renditions = conn.execute(
+            text(
+                "SELECT height, status, key FROM renditions "
+                "WHERE video_id=:id ORDER BY height"
+            ),
+            {"id": video_id},
+        ).fetchall()
+
+    return VideoSummary(
+        id=v[0],
+        source_key=v[1],
+        created_at=str(v[2]),
+        renditions=[{"height": r[0], "status": r[1], "key": r[2]} for r in renditions],
+    )
 
 
 @app.get("/videos/{video_id}/playlist")
-def serve_master_playlist(video_id: str):
-    key = f"HLS/{video_id}/index.m3u8"
-    s3 = get_s3()
-    obj = s3.get_object(Bucket=S3_BUCKET, Key=key)
-    data = obj["Body"].read()
+def serve_master_playlist(video_id: str, v: str | None = None):
+    obj = get_s3().get_object(Bucket=settings.s3_bucket, Key=f"HLS/{video_id}/index.m3u8")
+    content = obj["Body"].read().decode("utf-8")
+    if v:
+        query = urlencode({"v": v})
+        content = "\n".join(
+            f"{line}?{query}" if line.endswith(".m3u8") else line
+            for line in content.splitlines()
+        ) + "\n"
     return Response(
-        content=data,
+        content=content,
         media_type="application/vnd.apple.mpegurl",
-        headers={"Cache-Control": "public, max-age=60"},
+        headers={"Cache-Control": "no-cache"},
     )
 
+
 @app.get("/videos/{video_id}/{path:path}")
-def serve_hls_child(video_id: str, path: str):
-    # e.g. 240.m3u8, 240_000.ts, etc.
+def serve_hls_child(video_id: str, path: str, v: str | None = None):
     key = f"HLS/{video_id}/{path}"
-    s3 = get_s3()
-    obj = s3.get_object(Bucket=S3_BUCKET, Key=key)
+    obj = get_s3().get_object(Bucket=settings.s3_bucket, Key=key)
+    if key.endswith(".m3u8"):
+        content = obj["Body"].read().decode("utf-8")
+        if v:
+            query = urlencode({"v": v})
+            lines: list[str] = []
+            for line in content.splitlines():
+                if line.startswith('#EXT-X-MAP:URI="') and line.endswith('"'):
+                    uri = line.removeprefix('#EXT-X-MAP:URI="').removesuffix('"')
+                    lines.append(f'#EXT-X-MAP:URI="{uri}?{query}"')
+                elif line and not line.startswith("#"):
+                    lines.append(f"{line}?{query}")
+                else:
+                    lines.append(line)
+            content = "\n".join(lines) + "\n"
+        return Response(
+            content=content,
+            media_type="application/vnd.apple.mpegurl",
+            headers={"Cache-Control": "no-cache"},
+        )
+
     return StreamingResponse(
         obj["Body"],
         media_type=_content_type_for(key),
         headers={"Cache-Control": "public, max-age=3600"},
     )
 
-# --- Videos: list recent ---
-@app.get("/videos")
+
+@app.get("/videos", response_model=list[VideoListItem])
 def list_videos(limit: int = 25):
     with engine.begin() as conn:
-        rows = conn.execute(text(
-            "SELECT id, key, created_at FROM videos ORDER BY created_at DESC LIMIT :lim"
-        ), {"lim": limit}).fetchall()
-    return [{"id": r[0], "key": r[1], "created_at": str(r[2])} for r in rows]
+        rows = conn.execute(
+            text(
+                "SELECT id, key, created_at FROM videos "
+                "ORDER BY created_at DESC LIMIT :lim"
+            ),
+            {"lim": limit},
+        ).fetchall()
+    return [VideoListItem(id=r[0], key=r[1], created_at=str(r[2])) for r in rows]
+
+
+# ---------------------------------------------------------------------------
+# Metrics player
+# ---------------------------------------------------------------------------
+
 
 @app.get("/metrics-player")
 def metrics_player():
     """
-    Simple HTML page that plays either:
-      - /videos/{video_id}/basic   (single-bitrate MP4 baseline)
-      - /videos/{video_id}/playlist (HLS ABR, via hls.js)
+    Serve an HTML page that plays a video and exposes playback metrics on
+    ``window.__metrics__``: startupTime, stallCount, stallTime, currentTime.
 
-    It exposes buffering / startup metrics on window.__metrics__:
-      - startupTime: seconds from page load until first 'playing'
-      - stallCount: how many times <video> fires 'waiting'
-      - stallTime: total seconds spent stalled after startup
-      - currentTime: current playback time
+    Query params:
+      - ``video_id``: ID of the video to play (required)
+      - ``mode``: ``"abr"`` (default, HLS via hls.js) or ``"basic"`` (MP4)
     """
     html = """
     <!DOCTYPE html>
@@ -271,7 +359,7 @@ def metrics_player():
         <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
         <script>
           const params = new URLSearchParams(window.location.search);
-          const mode = params.get("mode") || "abr";      // "basic" or "abr"
+          const mode = params.get("mode") || "abr";
           const videoId = params.get("video_id");
 
           const video = document.getElementById("video");
@@ -302,11 +390,9 @@ def metrics_player():
           });
 
           video.addEventListener("playing", () => {
-            // First time we hit 'playing' → startup latency
             if (startupTime === null) {
-              startupTime = (performance.now() - startTime) / 1000.0; // seconds
+              startupTime = (performance.now() - startTime) / 1000.0;
             }
-
             if (stallStart !== null) {
               stallTime += (performance.now() - stallStart) / 1000.0;
               stallStart = null;
@@ -314,27 +400,24 @@ def metrics_player():
             updateMetrics();
           });
 
-          // Periodic update so tests/devtools can read metrics over time
           updateMetrics();
           setInterval(updateMetrics, 1000);
 
           if (!videoId) {
             metricsEl.textContent = "Missing ?video_id=...";
           } else {
-            const srcAbr = `/videos/${videoId}/playlist`;
-            const srcBasic = `/videos/${videoId}/basic`;
-            const src = mode === "abr" ? srcAbr : srcBasic;
+              const src = mode === "abr"
+                  ? `/videos/${videoId}/playlist?v=${Date.now()}`
+              : `/videos/${videoId}/basic`;
 
             if (mode === "abr" && window.Hls && Hls.isSupported()) {
               const hls = new Hls();
               hls.loadSource(src);
               hls.attachMedia(video);
             } else {
-              // basic mode (or fallback) – native playback
               video.src = src;
             }
 
-            // Try to auto-start playback (muted to avoid autoplay blocking)
             video.muted = true;
             video.play().catch(() => {});
           }
@@ -343,4 +426,3 @@ def metrics_player():
     </html>
     """
     return Response(content=html, media_type="text/html")
-
