@@ -3,6 +3,7 @@ node_modules/
 .next/
 out/
 *.log
+*.tsbuildinfo
 
 # Python
 __pycache__/
@@ -38,3 +39,7 @@ coverage/
 
 # Docker
 *.pid
+
+# Docker bind-mount placeholders; shared config lives at apps/config.py.
+apps/api/app/config.py
+apps/worker/config.py
