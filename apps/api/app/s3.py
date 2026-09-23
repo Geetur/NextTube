@@ -1,20 +1,20 @@
-import os, boto3
+"""MinIO / S3-compatible object storage helpers."""
 
-S3_ENDPOINT = os.getenv("S3_ENDPOINT", "http://minio:9000")
-S3_REGION   = os.getenv("S3_REGION", "us-east-1")
-S3_ACCESS   = os.getenv("S3_ACCESS_KEY", "minioadmin")
-S3_SECRET   = os.getenv("S3_SECRET_KEY", "minioadmin")
-S3_BUCKET   = os.getenv("S3_BUCKET", "media")
+import boto3
+
+from app.config import settings
+
 
 def client():
     return boto3.client(
         "s3",
-        region_name=S3_REGION,
-        aws_access_key_id=S3_ACCESS,
-        aws_secret_access_key=S3_SECRET,
-        endpoint_url=S3_ENDPOINT,
+        region_name=settings.s3_region,
+        aws_access_key_id=settings.s3_access_key,
+        aws_secret_access_key=settings.s3_secret_key,
+        endpoint_url=settings.s3_endpoint,
         config=boto3.session.Config(signature_version="s3v4"),
     )
 
-def put_bytes(key: str, data: bytes, content_type="application/octet-stream"):
-    client().put_object(Bucket=S3_BUCKET, Key=key, Body=data, ContentType=content_type)
+
+def put_bytes(key: str, data: bytes, content_type: str = "application/octet-stream") -> None:
+    client().put_object(Bucket=settings.s3_bucket, Key=key, Body=data, ContentType=content_type)
