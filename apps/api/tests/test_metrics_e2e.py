@@ -1,11 +1,12 @@
-import time
 import pathlib
+import time
 import httpx
 
 import pytest
 from playwright.sync_api import Page
 
 API_BASE = "http://localhost:8000"
+DATA_DIR = pathlib.Path(__file__).parent / "data"
 
 def upload_video(client: httpx.Client, path: str) -> str:
     with open(path, "rb") as f:
@@ -45,7 +46,7 @@ def poll_until_ready(client: httpx.Client, video_id: str, timeout: float = 300.0
 
 
 def test_time_to_ready_hls():
-    test_video_path = "tests/data/sample60.mp4" 
+    test_video_path = DATA_DIR / "sample60.mp4"
     client = httpx.Client()
 
     t0 = time.perf_counter()
@@ -71,7 +72,7 @@ def process_single_video(client: httpx.Client, path: str) -> float:
 
 def test_concurrent_transcodes():
     client = httpx.Client()
-    test_video_path = "tests/data/sample60.mp4"
+    test_video_path = DATA_DIR / "sample60.mp4"
     N = 5  # number of videos to process concurrently
 
     # Sequential baseline
@@ -159,7 +160,7 @@ def test_buffering_basic_vs_abr(page: Page):
     client = httpx.Client()
 
     # 1) Upload a sample video and wait for renditions to be ready
-    test_video_path = "tests/data/sample15.mp4"  # ideally a 20–60s MP4
+    test_video_path = DATA_DIR / "sample15.mp4"  # ideally a 20-60s MP4
     video_id = upload_video(client, test_video_path)
     start_transcode(client, video_id)
     poll_until_ready(client, video_id)
